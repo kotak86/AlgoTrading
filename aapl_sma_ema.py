@@ -2,12 +2,11 @@
 
 import ta
 import time
-import random
 import threading
 import datetime
 import pandas as pd
 
-from ibapi.client import *
+from ibapi.client import EClient
 from ibapi.wrapper import *
 
 DATA_SUBSCRIPTION = "DELAYED"
@@ -77,8 +76,7 @@ class IBApi(EClient, EWrapper):
 
     def get_option_contract(self):
         atm_strike = self.get_atm_strike(self.mkt_price)
-        print(self.expiration_date)
-        print("atm strike:", atm_strike)
+        #print("atm strike:", atm_strike)
         option_contract = self.create_contract(contract_type="OPT")
         option_contract.right = "C"
         option_contract.strike = atm_strike
@@ -97,11 +95,17 @@ class IBApi(EClient, EWrapper):
         sma100 = self.calc_sma(100)[-1]
         
         if sma50 > sma100:
-            print("price:", self.option_market_price)
-            print(self.option_market_price*0.9)
-            print(self.option_market_price*1.25)
+            self.reqMktData(self.nextorderId, app.get_option_contract(), "", 0, 0, [])
+            print("buy strategy1")
             
-            mult = 0.05
+            while True:
+                time.sleep(5)
+                if self.option_market_price > 0:
+                    self.cancelMktData(app.nextorderId)
+                    break
+                print("waiting for options price")
+            
+            mult = 0.05 #price has to be divideable by 0.05as
             self.create_buy_order(self.nextorderId, self.option_contract, bracket_prices=(round(math.floor(self.option_market_price*0.9 / mult) * mult, 2),
                                                                                           round(math.floor(self.option_market_price*1.25 / mult) * mult, 2)))
             
@@ -127,6 +131,7 @@ class IBApi(EClient, EWrapper):
             sma100 = self.calc_sma(100)[-1]
             
             if (sma50 > sma100) and (ema5 > ema8) and (ema8 > ema21) and (ema21 > ema34):
+                print("buy strategy2")
                 aapl_contract = self.create_contract()
                 self.create_buy_order(self.nextorderId, aapl_contract, trailing_percentage=5)
                 
@@ -139,7 +144,11 @@ class IBApi(EClient, EWrapper):
         order = Order()
         order.orderId = reqId
         order.action = "Buy"
-        order.orderType = "MKT"
+        if trailing_percentage:
+            order.orderType = "LMT"
+            order.lmtPrice =  round(self.mkt_price*1.1)
+        else:
+            order.orderType = "MKT"     
         order.totalQuantity = 1
         if bracket_prices or trailing_percentage:
             order.transmit = False
@@ -181,7 +190,7 @@ class IBApi(EClient, EWrapper):
         take_profit_order.orderId = self.nextorderId
         take_profit_order.parentId = parent_id
         take_profit_order.tif = "GTC"
-        take_profit_order.transmit = False
+        take_profit_order.transmit = True
         self.nextorderId += 1
 
         return (stop_order, take_profit_order)
@@ -193,8 +202,9 @@ class IBApi(EClient, EWrapper):
         trailing_order.orderType = 'TRAIL'
         trailing_order.trailingPercent = trailingPercent
         trailing_order.orderId = self.nextorderId
+        trailing_order.tif = "GTC"
         trailing_order.parentId = parent_id
-        trailing_order.transmit = False
+        trailing_order.transmit = True
         self.nextorderId += 1
         
         #trailing_order.action = 'SELL'
@@ -213,9 +223,11 @@ class IBApi(EClient, EWrapper):
         print('Order Executed: ', reqId, contract.symbol, contract.secType, contract.currency, execution.execId, execution.orderId, execution.shares, execution.lastLiquidity)
         
     def openOrder(self, orderId, contract, order, orderState):
-        print('openOrder id:', orderId, contract.symbol, contract.secType, '@', contract.exchange, ':', order.action, order.orderType, order.totalQuantity, orderState.status)
+        pass
+        # print('openOrder id:', orderId, contract.symbol, contract.secType, '@', contract.exchange, ':', order.action, order.orderType, order.totalQuantity, orderState.status)
 
     def contractDetails(self, reqId, contractDetails):
+        #save option chain
         if contractDetails.contract.secType == "OPT":
             symbol = contractDetails.contract.symbol
             expiration_date = contractDetails.contract.lastTradeDateOrContractMonth
@@ -228,7 +240,6 @@ class IBApi(EClient, EWrapper):
             
         
     def contractDetailsEnd(self, reqId:int):
-        print("end contract details")
         self.option_chain_processed = True
             
         
@@ -240,13 +251,16 @@ class IBApi(EClient, EWrapper):
             self.mkt_price = price
             self.mkt_price_rdy = True
 
+
     def tickSize(self, reqId, tickType, size):
         pass
         # print(reqId, TickTypeEnum.to_str(tickType), size)
         
+        
     def historicalData(self, reqId, bar):
         bar.date = " ".join(bar.date.split(" ")[:-1])
         self.historical_data_lists["AAPL"].append(vars(bar))
+
 
     def historicalDataEnd(self, reqId, start, end):
         print(f"Start: {start}, End: {end}")
@@ -256,12 +270,13 @@ class IBApi(EClient, EWrapper):
         
         self.hist_data_rdy = True
         
+        
     def position(self, account: str, contract: Contract, position: Decimal,
                  avgCost: float):
         super().position(account, contract, position, avgCost)
-        print("Position.", "Account:", account, "Symbol:", contract.symbol, "SecType:",
-              contract.secType, "Currency:", contract.currency,
-              "Position:", decimalMaxString(position), "Avg cost:", floatMaxString(avgCost))
+        # print("Position.", "Account:", account, "Symbol:", contract.symbol, "SecType:",
+        #       contract.secType, "Currency:", contract.currency,
+        #       "Position:", decimalMaxString(position), "Avg cost:", floatMaxString(avgCost))
         
         
         if contract.symbol == "AAPL" and contract.secType == "STK":
@@ -271,18 +286,21 @@ class IBApi(EClient, EWrapper):
             if position > 0:
                 self.open_option = True
     
+    
     def positionEnd(self):
         super().positionEnd()
         self.positions_rdy = True
-        print("PositionEnd")
+        
         
     def nextValidId(self, orderId: id):
         super().nextValidId(orderId)
         self.nextorderId = orderId
         print('The next valid order id is: ', self.nextorderId)
         
+        
 def run_loop():
     app.run()
+    
     
 def request_historical_data(app, symbol):
     aapl_contract = app.create_contract()
@@ -290,16 +308,15 @@ def request_historical_data(app, symbol):
     hour = datetime.datetime.now().hour
     app.reqHistoricalData(app.nextorderId, aapl_contract, f"{today} {hour}:00:00 UTC", "30 D", "1 hour", "TRADES", 0, 1, 0, [])
     
+    
 if __name__ == "__main__":
     app = IBApi()
-    app.connect("127.0.0.1", 7497, clientId=1)
+    app.connect("127.0.0.1", 7497, clientId=1000)
     
-    app.nextorderId = None
-
     #Start the socket in a thread
     api_thread = threading.Thread(target=run_loop, daemon=True)
     api_thread.start()
-    
+
     #Check if the API is connected via orderid
     while True:
         if isinstance(app.nextorderId, int):
@@ -309,10 +326,7 @@ if __name__ == "__main__":
             print('waiting for connection')
             time.sleep(1)
             
-    if DATA_SUBSCRIPTION == "DELAYED":
-        app.reqMarketDataType(3)
-                
-    #set option chain
+    #set option chain for apple
     if SYMBOL not in app.option_chain_dict:
         app.option_chain_dict[SYMBOL] = []
         option_contracts = app.create_contract(symbol=SYMBOL, contract_type="OPT")
@@ -320,14 +334,18 @@ if __name__ == "__main__":
         max_expiration_string = str(max_expiration_date.year) + str(max_expiration_date.month)
         option_contracts.lastTradeDateOrContractMonth = max_expiration_string
         option_contracts.right = "C"
-    
         app.reqContractDetails(app.nextorderId, option_contracts)
-
-    while True:    
-        app.hist_data_rdy = app.positions_rdy = app.option_chain_rdy = app.mkt_price_rdy = False
+        
+    #check apple stock mkt data
+    app.reqMktData(app.nextorderId, app.create_contract(), "", 0, 0, [])
+        
+    if DATA_SUBSCRIPTION == "DELAYED":
+        app.reqMarketDataType(3)
     
+    #check the strategies endlessly till program gets aborted    
+    while True:    
+        app.hist_data_rdy = app.positions_rdy = app.mkt_price_rdy = False
         request_historical_data(app, SYMBOL)
-        app.reqMktData(app.nextorderId, app.create_contract(), "", 0, 0, [])
         app.reqPositions()
     
         while True:
@@ -337,28 +355,19 @@ if __name__ == "__main__":
             print("waiting while")
             time.sleep(2)
             
-        app.cancelMktData(app.nextorderId)
         #add the mkt price to historical data as last row
         app.add_mkt_price_row(SYMBOL)
                 
-        app.nextorderId += 1
         if app.open_option == False:
+            app.nextorderId += 1
             app.option_price_id = app.nextorderId
-            app.reqMktData(app.nextorderId, app.get_option_contract(), "", 0, 0, [])
-            while True:
-                time.sleep(2)
-                if app.option_market_price > 0:
-                    break
-                print("wait for options price")
             s1_success = app.execute_strategy1()
     
         if app.open_stock == False:
-            print("executing strategy 2")
             s2_success = app.execute_strategy2()
             
-        time.sleep(20)
+        time.sleep(60)
     
     
-    time.sleep(5)
     app.disconnect()
     
